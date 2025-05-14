@@ -1,0 +1,41 @@
+version: '3'
+
+
+services:
+  redis-server2:
+    image: redis
+    ports:
+      - 6379:6379
+    volumes:
+      - redis-data:/data
+    networks:
+      - worker-networks
+  
+  producer-service2:
+    image: producer-server
+    ports:
+      - 3000:3000
+    environment:
+      - HOST=redis-server2
+    depends_on:
+      - redis-server2
+    networks:
+      - worker-networks
+
+  consumer-service2:
+    image: consumer-service
+    environment:
+      - HOST=redis-server2
+    depends_on:
+      - redis-server2
+    networks:
+      - worker-networks
+
+
+
+networks:
+  worker-networks:
+
+volumes:
+  redis-data:
+     driver: local
