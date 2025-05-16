@@ -11,16 +11,20 @@ const client = createClient({
 const socket = io("http://localhost:3000");
 
 let IsProcessing = false;
+let isWorking = false;
 
 client.connect();
 
 const checkforJob = async () => {
     try {
-        const jobId = await client.rPop("jobQueue");
-        if (!jobId) {
+        const result = await client.brPop("jobQueue", 0);
+        if (!result) {
             console.log("No jobs in queue, waiting...");
             return null;
         }
+        const jobId = result.element;
+        console.log("got job", result);
+
         const status = await client.get(`${jobId}:status`);
         const type = await client.get(`${jobId}:type`);
         const payloads = await client.hGetAll(`${jobId}:payload`);
@@ -51,17 +55,25 @@ const handleJob = async (jobId) => {
         if (result === "OK") console.log("result is got");
         console.log("==========================================");
         IsProcessing = false;
+        return jobId;
     } catch (error) {
         console.log("ERROR ==> ", error);
+        return null;
     }
 };
 
 const jobLoop = async () => {
+    isWorking = true;
     const job = await checkforJob();
+    console.log("Took job for working:", job);
+
     if (job) {
-        await handleJob(job);
+        const result = await handleJob(job);
+        console.log("this is the result after handling", result);
+        if (result) await client.publish("channel:job:done", result);
     } else {
-        socket.emit("job", "jobdone");
+        socket.emit("job", { message: "jobdone" });
+        isWorking = false;
         return;
     }
     jobLoop();
@@ -71,8 +83,9 @@ socket.on("connect", () => {
     console.log("Connected to server");
 });
 
-socket.on("job", async (msg) => {
-    if (msg === "jobadded") {
+socket.on("job:add:consumer", async (msg) => {
+    console.log(msg);
+    if (msg === "jobadded" && !isWorking) {
         console.log("job added , :)");
         await jobLoop();
     }

@@ -20,6 +20,13 @@ app.use(express.urlencoded({ extended: true }));
 // app.use(bodyParser.json());
 // app.use(bodyParser.urlencoded({ extended: true }));
 
+const subscribeClient = createClient({
+    socket: {
+        host: HOST,
+        port: 6379,
+    },
+});
+
 const client = createClient({
     socket: {
         host: HOST,
@@ -27,7 +34,16 @@ const client = createClient({
     },
 });
 
+subscribeClient.connect();
+
 client.connect();
+
+// Storing the connections
+type connecStorageType = {
+    socketId: string;
+    jobId: string;
+};
+let connections: connecStorageType[] = [];
 
 app.post("/", async (req, res, next) => {
     try {
@@ -43,7 +59,9 @@ app.post("/", async (req, res, next) => {
         await client.set(`job:${jobId}:type`, type);
         await client.hSet(`job:${jobId}:payload`, payload);
 
-        io.emit("job", "jobadded");
+        () => {
+            io.emit("job", "jobadded");
+        };
         res.status(200).json({
             jobId,
             status: "queued",
@@ -90,20 +108,92 @@ app.get("/", async (req, res, next) => {
     }
 });
 
-io.on("connection", (Socket) => {
-    console.log("new connection");
-    Socket.on("job", (msg) => {
-        console.log(msg);
+// subscribing to a channel
+subscribeClient.subscribe("channel:job:done", (returnJobId: string) => {
+    console.log(`${returnJobId} is done`);
+    const conres = connections.filter((con) => {
+        console.log(
+            `checking ${con.jobId} and ${returnJobId} and the answer is ${
+                con.jobId === returnJobId ? true : false
+            }`
+        );
+        if (con.jobId === returnJobId) {
+            return con;
+        } else {
+            return null;
+        }
     });
+    // Check if connection exists
+    console.log(
+        "after filter ",
+        conres,
+        "and the connection list is ",
+        connections
+    );
+
+    try {
+        if (conres.length > 0) {
+            const socketId = conres[0].socketId;
+            io.emit(socketId, {
+                message: "job done",
+                jobId: returnJobId,
+                socketId,
+            });
+        } else {
+            console.log(`No socket connection found for job ${returnJobId}`);
+        }
+    } catch (error) {
+        console.log("catching error ", error);
+    }
 });
 
 // Socket.IO connection handling
 io.on("connection", (socket) => {
-    console.log("Client connected:", socket.id);
+    console.log(
+        "Client connected:",
+        socket.id,
+        "Total connection",
+        io.engine.clientsCount
+    );
+    socket.on(
+        "job:add",
+        async ({ type, payload }: { type: string; payload: {} }) => {
+            console.log("got new task: ", { type, payload });
 
-    socket.on("job", (msg) => {
-        console.log("Job message received:", msg);
-    });
+            try {
+                if (!type || !payload) {
+                    io.emit("job", {
+                        message: " type and payload is requried",
+                    });
+                }
+                const jobId = uuidv4();
+                await client.lPush("jobQueue", `job:${jobId}`);
+                await client.set(`job:${jobId}:status`, "queued");
+                await client.set(`job:${jobId}:type`, type);
+                await client.hSet(`job:${jobId}:payload`, payload);
+
+                // () => {
+                io.emit("job:add:consumer", "jobadded");
+                console.log(`job send job:${jobId} for socket ${socket.id}`);
+
+                connections.push({
+                    socketId: socket.id,
+                    jobId: `job:${jobId}`,
+                });
+                // };
+            } catch (error) {
+                console.log("error", error);
+                io.emit("job", { message: "something went wrong" });
+            }
+        }
+    );
+
+    socket.on(
+        "job",
+        ({ message, jobDone }: { message: string; jobDone: string[] }) => {
+            console.log("Job message received:", message);
+        }
+    );
 
     socket.on("disconnect", () => {
         console.log("Client disconnected:", socket.id);
